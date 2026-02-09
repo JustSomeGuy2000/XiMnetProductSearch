@@ -1,0 +1,5 @@
+.venv
+other
+__pycache__
+node_modules
+chroma
