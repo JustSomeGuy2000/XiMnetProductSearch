@@ -36,3 +36,38 @@
     - CLIs quickly become troublesome to navigate and manage as more and more menus and options are added.
 - The textual search does not consider context or relevance, only presence of the search term.
 - Embeddings are generated from text, meaning that the product data object must be converted to a string, losing most of the meaning associated with its fields.
+- Bulk loading of product data from PDFs or images remains poorly implemented.
+
+# PDF and Image Processing
+## First attempt: `unstructured`
+- The `unstructured` module can use a combination of the `poppler` library, Tesseract OCR engine, and `detectron2_onnx` layout detection model to partition PDFs and images into chunks and extract structured infromation from text and layout.
+- It can attempt to extract tables, but only if lines are clearly defined.
+    - Implicit tables amde by arrangements of text are not detected.
+- However, the open source library (as opposed to their paid service) has few options for customisation and is not very good.
+    - OCR is unusably inaccurate.
+    - Many duplicates appear in the output.
+    - Relations between content are poorly inferred.
+    - Some symbol images are erroneously converted into text.
+## Second attempt: `pymupdf`
+- The `pymupdf` module is a PDF manipulation library that can extract text from PDFs by directly reading file data, or using Tesseract OCR for flat PDFs and images.
+- It has three output options: JSON, markdown, and plain text.
+- Although it reads PDFs in internal order, which may not correspond to reading order, there is an option to automatically sort by inferrred order. 
+- Unfortunately, there are still issues:
+    - Plain text carries too little information regarding the properties of text, which is crucial in determining relation.
+    - Markdown mode outputs a string with markdown elements, which requires heavy processing to extract information. While containing more information than plain text, it still carries too little.
+    - JSON mode is extremely verbose. There was not enough time to thoroughly analyse it and derive a general way of ordering the elements using the information contained within.
+- In any case, a purely deterministic method of ordering would likely fail for the majority of cases due to the huge possible variance of inputs.
+## Third attmept: `donut-python`
+- The `donut-python` module uses a specialised AI model called DonUT to extract various types of information from documents. Uses include:
+    - Identifying document type
+    - Answering questions about the document
+    - **Producing structured JSON detailing the document's contents.**
+- It attempts to import a nonexistent attribute of `transformers.modeling_utils` called `PretrainedConfig`
+    - The class now resides in `transformers`
+- After manually correcting the import, the module also attempts to import a nonexistent attribute of `pyarrow` called `PyExtensionType`
+    - THis is due to `PyExtensionType` being renamed to `ExtensionType` some time in the past.
+- After installing the correct `pyarrow` version, the model reports a severe mismatched between expected and obtained model weights.
+- It also attempts to access a nonexistent attribute of itself called `all_tied_weights_keys`.
+- At this point, I abandoned the pursuit.
+- Unfortunately, it was also the most accurate option (if trials done by other people on the Internet were anything to go by).
+- This misadventure took the entire morning (until 11:58 AM to be exact).

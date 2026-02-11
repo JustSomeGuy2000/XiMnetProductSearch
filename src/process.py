@@ -66,7 +66,7 @@ def search(query: str, exactOnly: bool) -> list[ProductData]:
     
 # search full database for textual matches
 # allow user to choose between specifics (textual match and above certain confidence threshold) or plus recommended
-# better data encapsulation (put field names and delimeters into the string to be emebdded)
+# better data encapsulation (put field names and delimiters into the string to be emebdded)
 
 # Bulk import: 
 # Fields: name, desc, tags, price

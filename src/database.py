@@ -1,8 +1,16 @@
+import json
 import numpy as np
+import tkinter as tk
 import ollama as ollm
 import chromadb as cdb
 import pydantic as pyd
-from typing import Any
+from typing import Any, Literal
+from tkinter import filedialog as fd
+import unstructured.documents.elements as unstels
+
+root = tk.Tk()
+root.withdraw()
+root.call('wm', 'attributes', '.', '-topmost', True)
 
 class OllamaEmbedder(cdb.EmbeddingFunction):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -34,6 +42,119 @@ class ProductData(pyd.BaseModel):
     
     def __hash__(self) -> int:
         return hash(self.model_dump_json())
+    
+class DataPart:
+    def __init__(self, name: str | None = None, desc: str | None = None, sku: str = "", price: float | None = None, tags: list[str] = [], available: bool = True) -> None:
+        self.name = name
+        self.desc = desc
+        self.sku = sku
+        self.price = price
+        self.tags = tags
+        self.available = available
+
+    def toData(self) -> ProductData:
+        if self.name == None or self.desc == None or self.price == None:
+            raise TypeError("Missing fields.")
+        return ProductData(name=self.name, desc=self.desc, sku=self.sku, price=self.price, tags=self.tags, available=self.available)
+    
+def pdfParseUnst() -> None:
+    import unstructured.partition.pdf as unstpdf
+    file = fd.askopenfile("rb", filetypes=[("PDF", "*.pdf")])
+    pdf = unstpdf.partition_pdf(file=file, strategy="auto", languages=["eng"], extract_image_block_types=["Image", "Table"])
+    productDataUnst = extractProductDataUnst(pdf)
+    print(productDataUnst)
+
+def imgParseUnst() -> None:
+    import unstructured.partition.image as unstimg
+    file = fd.askopenfile("rb", filetypes=[("Image (PNG)", "*.png"), ("Image (HEIC)", "*.heic"), ("Image (JPG)", "*.jpg"), ("Image (JPEG)", "*.jpeg")])
+    img = unstimg.partition_image(file=file, strategy="hi_res", languages=["eng"], extract_image_block_types=["Image", "Table"])
+    productDataUnst = extractProductDataUnst(img)
+    print(productDataUnst)
+
+def extractProductDataUnst(elements: list[unstels.Element]) -> list[ProductData]:
+    prices: list[float] = []
+    last: unstels.Element = elements[0]
+    parts: list[DataPart] = []
+    part = DataPart()
+    titleEncountered: bool = False
+    for el in elements:
+        eltype = type(el)
+        if el.text == last.text and type(last) == unstels.Title and eltype == unstels.Text:
+            continue
+        match eltype:
+            case unstels.Title:
+                part.name = el.text
+                titleEncountered = True
+            case unstels.Text | unstels.ListItem | unstels.NarrativeText:
+                if not titleEncountered:
+                    continue
+                try:
+                    prices.append(int(el.text))
+                except ValueError:
+                    if part.desc == None:
+                        part.desc = ""
+                    part.desc += " " + el.text
+            case _:
+                print(f"Unknown element type: {eltype}, containing \"{el.text}\"")
+        last = el
+        if part.name != None and part.desc != None:
+            parts.append(part)
+            part = DataPart()
+    priceNum = len(prices)
+    for ind, part in enumerate(parts):
+        part.price = prices[ind] if ind < priceNum else 0
+    return [dp.toData() for dp in parts]
+
+def pdfParseMu() -> None:
+    import pymupdf as pymu
+    import pymupdf.layout as _
+    import pymupdf4llm as pymul
+    file = fd.askopenfilename(filetypes=[("PDF", "*.pdf")])
+    pdf = pymu.open(file)
+    productDataMu = pymul.to_json(pdf, header=False, footer=False)
+    for page in pdf:
+        print(page.get_text("text", sort=True))
+    #print(scheme(json.loads(productDataMu)))
+    #print([pdfmu.get_page_text(i) for i in range(pdfmu.page_count)])
+
+type schemePrimitives = Literal["str"] | Literal["int"] | Literal["bool"] | Literal["?"] | Literal["float"]
+type schemeParts = schemePrimitives | list[schemeParts] | dict[str, schemeParts]
+def toPrimtiveOrUnknown(type: str) -> schemePrimitives:
+    if type == "str" or type == "int" or type == "bool" or type == "float":
+        return type
+    else:
+        return "?"
+def scheme(of: dict[str, Any]) -> dict[str, schemeParts]:
+    res: dict[str, schemeParts] = {}
+    for key, val in of.items():
+        valType = type(val)
+        if valType is dict:
+            res[key] = scheme(val)
+        elif valType is list:
+            res[key] = listScheme(val) if len(val) > 0 else ["?"]
+        elif valType is str or valType is bool or valType is int or valType is float:
+            res[key] = toPrimtiveOrUnknown(valType.__name__)
+        else:
+            res[key] = "?"
+    return res
+
+def listScheme(of: list[Any]) -> list[schemeParts]:
+    res: list[schemeParts] = []
+    if len(of) < 1:
+        res.append("?")
+    else:
+        val = of[0]
+        valType = type(val)
+        if valType is dict:
+            res.append(scheme(val))
+        elif valType is list:
+            res.append(scheme(val[0]) if len(val) > 0 else ["?"])
+        elif valType is str or valType is bool or valType is int or valType is float:
+            res.append(toPrimtiveOrUnknown(valType.__name__))
+        else:
+            res.append("?")
+    res.append(len(of)) # type: ignore
+    return res
 
 class DBProductData(pyd.BaseModel):
     id: str
@@ -55,13 +176,15 @@ if __name__ == "__main__":
         while True:
             option = input(
 """Database management
-1. Add entries from file
+1. Add entries from JSON file
 2. Load test entries to file
 3. Clear database
 4. Peek database
 5. Search database
 6. Upsert entries from file
-7. Quit
+7. Add entries from PDF file
+8. Add entries from image file
+9. Quit
 Input option number >>> """)
             try:
                 opt = int(option.strip())
@@ -150,7 +273,7 @@ Input option number >>> """)
             print("Searching...")
             print(src.search(query, False))
 
-        if opt == 6:
+        elif opt == 6:
             fileName = input("Enter file name >>> ")
             print("Loading...")
             entriesList: list[DBProductData] = []
@@ -165,5 +288,18 @@ Input option number >>> """)
             print("Finished!")
 
         elif opt == 7:
+            GETFILE_TYPE: Literal["unst"] | Literal["mu"] = "unst"
+            if GETFILE_TYPE == "unst":
+                pdfParseUnst()
+                pass
+            elif GETFILE_TYPE == "mu":
+                pdfParseMu()
+                pass
+
+        elif opt == 8:
+            imgParseUnst()
+            pass
+
+        elif opt == 9:
             print("Quitting...")
             break
